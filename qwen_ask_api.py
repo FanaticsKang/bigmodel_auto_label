@@ -1,32 +1,33 @@
 import os
-import json
-import base64
-from typing import Optional, Dict, Any
-import requests
-from PIL import Image
 import io
+import base64
+import json
+from typing import Dict, Any
+from openai import OpenAI
+from PIL import Image
+import httpx
 
 
 class QwenAPIClient:
-    def __init__(self, api_key: str, model: str = "qwen2.5-vl-32b"):
+    def __init__(self, api_key: str):
         """
         初始化Qwen API客户端
 
         Args:
             api_key: Qwen API密钥
-            model: 模型名称，可选：
-                  - "qwen2.5-vl-32b" (默认)
-                  - "qwen2.5-vl-72b"
         """
         self.api_key = api_key
-        self.model = model
-        self.base_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+        self.base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
-        # 可用模型列表
-        self.available_models = {
-            "qwen2.5-vl-32b": "qwen-vl-plus",
-            "qwen2.5-vl-72b": "qwen-vl-max"
-        }
+        # 创建httpx客户端以支持代理
+        http_client = httpx.Client()
+
+        self.client = OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            http_client=http_client
+        )
+
 
     def encode_image_to_base64(self, image_path: str) -> str:
         """
@@ -122,80 +123,43 @@ class QwenAPIClient:
         # 编码图片
         image_base64 = self.encode_image_to_base64(image_path)
 
-        # 构建请求
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+        # 获取提示词
+        prompt = self.create_prompt()
 
-        # 获取实际模型名称
-        actual_model = self.available_models.get(self.model, self.model)
-
-        payload = {
-            "model": actual_model,
-            "input": {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "image": f"data:image/jpeg;base64,{image_base64}"
+        completion = self.client.chat.completions.create(
+            model="qwen-vl-max-latest", # 此处以qwen-vl-max-latest为例，可按需更换模型名称。模型列表：https://help.aliyun.com/zh/model-studio/models
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是一个驾驶场景标注专家，严格按照要求输出JSON格式结果。"},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_base64}"
                             },
-                            {
-                                "text": self.create_prompt()
-                            }
-                        ]
-                    }
-                ]
-            },
-            "parameters": {
-                "temperature": 0.1,
-                "max_tokens": 512
-            }
-        }
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                },
+            ],
+        )
 
+        # 解析返回结果
         try:
-            # 发送请求
-            response = requests.post(self.base_url, headers=headers, json=payload, timeout=60)
-            response.raise_for_status()
-
-            # 解析响应
-            result = response.json()
-
-            # 提取生成的内容
-            if "output" in result and "choices" in result["output"]:
-                content = result["output"]["choices"][0]["message"]["content"]
-
-                # 确保content是字符串
-                if isinstance(content, list) and len(content) > 0 and "text" in content[0]:
-                    content = content[0]["text"]
-                elif isinstance(content, list):
-                    content = content[0] if content else ""
-                elif not isinstance(content, str):
-                    content = str(content)
-
-                # 尝试解析JSON
-                try:
-                    # 清理可能的markdown格式
-                    if content.startswith("```json"):
-                        content = content[7:]
-                    if content.endswith("```"):
-                        content = content[:-3]
-                    content = content.strip()
-
-                    json_result = json.loads(content)
-                    return json_result
-                except json.JSONDecodeError as e:
-                    print(f"JSON解析错误: {e}")
-                    print(f"原始内容: {content}")
-                    return {"error": "JSON解析失败", "raw_content": content}
-            else:
-                return {"error": "API响应格式错误", "response": result}
-
-        except requests.exceptions.RequestException as e:
-            return {"error": f"请求失败: {str(e)}"}
+            result_text = completion.choices[0].message.content
+            # 尝试解析JSON
+            result = json.loads(result_text)
+            return result
+        except json.JSONDecodeError as e:
+            print(f"JSON解析错误: {e}")
+            print(f"原始返回: {result_text}")
+            return {"error": "JSON解析失败", "raw_response": result_text}
         except Exception as e:
-            return {"error": f"处理失败: {str(e)}"}
+            print(f"处理错误: {e}")
+            return {"error": str(e)}
 
 
 def main():
@@ -204,7 +168,6 @@ def main():
     """
     # 配置参数
     API_KEY = os.environ.get('QWEN_API_KEY', '')
-    MODEL = "qwen2.5-vl-32b"  # 可选: "qwen2.5-vl-32b", "qwen2.5-vl-72b"
     IMAGE_PATH = "data/test.jpg"  # 图片路径
 
     # 检查API密钥
@@ -225,11 +188,10 @@ def main():
         print("请确保图片文件存在于当前目录")
         return
 
-    print(f"开始使用模型: {MODEL}")
     print(f"分析图片: {IMAGE_PATH}")
 
     # 创建客户端
-    client = QwenAPIClient(api_key=API_KEY, model=MODEL)
+    client = QwenAPIClient(api_key=API_KEY)
 
     # 分析图片
     print("正在分析图片...")
