@@ -3,7 +3,9 @@
     "allow": [
       "WebSearch",
       "Bash(python:*)",
-      "Read(//c/Users/kang/**)"
+      "Read(//c/Users/kang/**)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []
